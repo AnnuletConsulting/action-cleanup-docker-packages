@@ -32,7 +32,7 @@ runs:
         # Lowercase repo name for GHCR
         echo "PACKAGE_NAME=$(echo "${{ inputs.repo }}" | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
 
-    - name: List all Docker images in GHCR
+    - name: List all Docker images in GHCR & delete untagged
       shell: bash
       env:
         GH_TOKEN: ${{ inputs.token }}
@@ -40,19 +40,21 @@ runs:
         PACKAGE_NAME: ${{ env.PACKAGE_NAME }}
         API_SCOPE: ${{ env.API_SCOPE }}
       run: |
-        curl -s -H "Authorization: Bearer $GH_TOKEN" \
-          "https://api.github.com/${API_SCOPE}/${OWNER}/packages?package_type=container" > packages.json
-
+        RESPONSE=$(curl -s -H "Authorization: Bearer $GH_TOKEN" \
+          "https://api.github.com/${API_SCOPE}/${OWNER}/packages?package_type=container")
+        echo "$RESPONSE" > packages.json
+        if ! jq 'type == "array"' packages.json | grep true; then
+          echo "Unexpected response from GitHub API:"
+          cat packages.json
+          exit 1
+        fi
         PACKAGE_ID=$(jq -r ".[] | select(.name==\"$PACKAGE_NAME\") | .id" packages.json)
-
         if [ -z "$PACKAGE_ID" ]; then
           echo "No package found for $PACKAGE_NAME"
           exit 0
         fi
-
         curl -s -H "Authorization: Bearer $GH_TOKEN" \
           "https://api.github.com/${API_SCOPE}/${OWNER}/packages/container/${PACKAGE_NAME}/versions" > versions.json
-
         for id in $(jq -r '.[] | select(.metadata.container.tags | length == 0) | .id' versions.json); do
           echo "Deleting untagged image version: $id"
           curl -X DELETE -H "Authorization: Bearer $GH_TOKEN" \
