@@ -1,0 +1,60 @@
+name: "Cleanup Untagged Docker Images"
+description: "Deletes untagged Docker images from the GitHub Container Registry for a given repository and owner (org or user)."
+inputs:
+  token:
+    description: "GitHub token with packages:write access"
+    required: false
+    default: ${{ github.token }}
+  owner:
+    description: "Organization or username that owns the repository"
+    required: false
+    default: ${{ github.repository_owner }}
+  repo:
+    description: "Repository name"
+    required: false
+    default: ${{ github.event.repository.name }}
+  personal:
+    description: "Set to true for user-owned (personal) repositories, false for org-owned"
+    required: false
+    default: "false"
+runs:
+  using: "composite"
+  steps:
+    - name: Set variables
+      shell: bash
+      id: vars
+      run: |
+        if [ "${{ inputs.personal }}" = "true" ]; then
+          echo "API_SCOPE=users" >> $GITHUB_ENV
+        else
+          echo "API_SCOPE=orgs" >> $GITHUB_ENV
+        fi
+        # Lowercase repo name for GHCR
+        echo "PACKAGE_NAME=$(echo "${{ inputs.repo }}" | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+
+    - name: List all Docker images in GHCR
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        OWNER: ${{ inputs.owner }}
+        PACKAGE_NAME: ${{ env.PACKAGE_NAME }}
+        API_SCOPE: ${{ env.API_SCOPE }}
+      run: |
+        curl -s -H "Authorization: Bearer $GH_TOKEN" \
+          "https://api.github.com/${API_SCOPE}/${OWNER}/packages?package_type=container" > packages.json
+
+        PACKAGE_ID=$(jq -r ".[] | select(.name==\"$PACKAGE_NAME\") | .id" packages.json)
+
+        if [ -z "$PACKAGE_ID" ]; then
+          echo "No package found for $PACKAGE_NAME"
+          exit 0
+        fi
+
+        curl -s -H "Authorization: Bearer $GH_TOKEN" \
+          "https://api.github.com/${API_SCOPE}/${OWNER}/packages/container/${PACKAGE_NAME}/versions" > versions.json
+
+        for id in $(jq -r '.[] | select(.metadata.container.tags | length == 0) | .id' versions.json); do
+          echo "Deleting untagged image version: $id"
+          curl -X DELETE -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/${API_SCOPE}/${OWNER}/packages/container/${PACKAGE_NAME}/versions/$id"
+        done
